@@ -16,6 +16,15 @@ import ffmpeg from 'fluent-ffmpeg';
 import type { PluginManifest, ProcessRequest, CallbackPayload } from './types.js';
 import { MetaCoreClient } from './meta-core-client.js';
 import { readJson, writeJson } from './cache.js';
+import { createWebDAVClient, WebDAVClient } from './webdav-client.js';
+
+// Initialize WebDAV client if WEBDAV_URL is set
+const webdavClient = createWebDAVClient();
+if (webdavClient) {
+    console.log('[ffmpeg] Using WebDAV for file access');
+} else {
+    console.log('[ffmpeg] Using direct filesystem access');
+}
 
 export const manifest: PluginManifest = {
     id: 'ffmpeg',
@@ -92,13 +101,28 @@ interface FileInfoCache {
     };
 }
 
-function runFFprobe(filePath: string): Promise<FFprobeData> {
+/**
+ * Run FFprobe on a file path or URL
+ * FFprobe natively supports HTTP URLs for input
+ */
+function runFFprobe(inputPath: string): Promise<FFprobeData> {
     return new Promise((resolve, reject) => {
-        ffmpeg(filePath).ffprobe((err, data) => {
+        ffmpeg(inputPath).ffprobe((err, data) => {
             if (err) reject(err);
             else resolve(data as FFprobeData);
         });
     });
+}
+
+/**
+ * Get the input path for FFprobe - WebDAV URL or local file path
+ */
+function getFFprobeInput(filePath: string): string {
+    if (webdavClient) {
+        // FFprobe can read from HTTP URLs directly
+        return webdavClient.toWebDAVUrl(filePath);
+    }
+    return filePath;
 }
 
 export async function process(
@@ -150,8 +174,9 @@ export async function process(
             }
         }
 
-        // Run FFprobe
-        const data = await runFFprobe(filePath);
+        // Run FFprobe (uses WebDAV URL if available, otherwise local path)
+        const ffprobeInput = getFFprobeInput(filePath);
+        const data = await runFFprobe(ffprobeInput);
         const metadata: Record<string, string> = {};
         const fileinfo: FileInfoCache = { streamdetails: {} };
 
@@ -287,7 +312,8 @@ export async function process(
         }
 
         const duration = Date.now() - startTime;
-        console.log(`[ffmpeg] Processed in ${duration}ms`);
+        const mode = webdavClient ? 'WebDAV' : 'filesystem';
+        console.log(`[ffmpeg] Processed in ${duration}ms (${mode})`);
 
         await sendCallback({
             taskId: request.taskId,
