@@ -1,0 +1,36 @@
+# MetaMesh Plugin: ffmpeg - Test Image
+# Builds the plugin and runs tests with FFprobe available
+
+FROM node:20-slim
+
+# Install ffmpeg for integration tests
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy package files and install ALL dependencies (including devDependencies)
+COPY package.json tsconfig.json ./
+RUN npm install
+
+# Copy source and test files
+COPY src/ ./src/
+COPY test/ ./test/
+
+# Build the plugin
+RUN npm run build
+
+# Generate test fixtures
+RUN chmod +x ./test/fixtures/generate-test-video.sh && \
+    ./test/fixtures/generate-test-video.sh
+
+# Create cache directory for tests
+RUN mkdir -p /cache && chmod 777 /cache
+
+# Set environment for tests
+ENV NODE_ENV=test
+ENV CACHE_PATH=/cache
+
+# Default command: run tests
+CMD ["npm", "test"]

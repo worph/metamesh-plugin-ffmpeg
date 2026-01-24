@@ -4,12 +4,13 @@
  * Extracts video/audio/subtitle stream metadata using FFprobe.
  * Depends on file-info plugin to determine file type.
  *
- * Matches old FFMpegFileProcessor output:
- * - fileinfo/duration
- * - fileinfo/formatName
- * - fileinfo/streamdetails/video/{n}/codec, width, height, etc.
- * - fileinfo/streamdetails/audio/{n}/codec, language, etc.
- * - fileinfo/streamdetails/subtitle/{n}/codec, language, etc.
+ * Storage format:
+ * - fileinfo/duration = "123.45"
+ * - fileinfo/formatName = "matroska,webm"
+ * - stream/0 = '{"type":"video","codec":"h264","width":1920,...}' (JSON string)
+ * - stream/1 = '{"type":"audio","codec":"aac","language":"eng",...}' (JSON string)
+ *
+ * Each stream is stored as a JSON string at the stream level.
  */
 
 import ffmpeg from 'fluent-ffmpeg';
@@ -40,23 +41,12 @@ export const manifest: PluginManifest = {
     schema: {
         'fileinfo/duration': { label: 'Duration', type: 'string', readonly: true },
         'fileinfo/formatName': { label: 'Format Name', type: 'string', readonly: true },
-        'fileinfo/streamdetails/video': {
-            label: 'Video Streams',
+        // Streams are stored as stream/0, stream/1, etc. - each is a JSON string
+        'stream/*': {
+            label: 'Stream',
             type: 'json',
             readonly: true,
-            hint: 'Video codec, resolution, bitrate, frame rate',
-        },
-        'fileinfo/streamdetails/audio': {
-            label: 'Audio Streams',
-            type: 'json',
-            readonly: true,
-            hint: 'Audio codec, language, sample rate, channels',
-        },
-        'fileinfo/streamdetails/subtitle': {
-            label: 'Subtitle Streams',
-            type: 'json',
-            readonly: true,
-            hint: 'Subtitle codec, language, title',
+            hint: 'Stream metadata (video/audio/subtitle) as JSON string',
         },
     },
     config: {},
@@ -192,115 +182,99 @@ export async function process(
             fileinfo.formatName = formatName;
         }
 
-        // Stream counters
-        let videoStreamIndex = 0;
-        let audioStreamIndex = 0;
-        let subtitleStreamIndex = 0;
-        let embeddedImageStreamIndex = 0;
+        // Global stream counter (all streams share one index)
+        let globalStreamIndex = 0;
 
-        // Process each stream
+        // Process each stream - store as JSON string at stream level
         for (const stream of data.streams || []) {
             if (!stream) continue;
 
             const codecType = String(stream.codec_type || '');
-            let basePath: string;
             let streamType: 'video' | 'audio' | 'subtitle' | 'embeddedimage';
-            let streamIdx: number;
 
             if (codecType === 'video') {
-                basePath = `fileinfo/streamdetails/video/${videoStreamIndex}`;
                 streamType = 'video';
-                streamIdx = videoStreamIndex++;
             } else if (codecType === 'audio') {
-                basePath = `fileinfo/streamdetails/audio/${audioStreamIndex}`;
                 streamType = 'audio';
-                streamIdx = audioStreamIndex++;
             } else if (codecType === 'subtitle') {
-                basePath = `fileinfo/streamdetails/subtitle/${subtitleStreamIndex}`;
                 streamType = 'subtitle';
-                streamIdx = subtitleStreamIndex++;
             } else if (codecType === 'embeddedimage') {
-                basePath = `fileinfo/streamdetails/embeddedimage/${embeddedImageStreamIndex}`;
                 streamType = 'embeddedimage';
-                streamIdx = embeddedImageStreamIndex++;
             } else {
                 continue;
             }
 
-            // Initialize stream object for cache
-            if (!fileinfo.streamdetails![streamType]) {
-                fileinfo.streamdetails![streamType] = {};
-            }
-            fileinfo.streamdetails![streamType]![streamIdx] = {};
-            const streamCache = fileinfo.streamdetails![streamType]![streamIdx];
+            // Build stream object with all relevant fields
+            const streamData: Record<string, string | number | boolean> = {
+                type: streamType,
+            };
 
             // Common fields
             if (stream.codec_name) {
-                metadata[`${basePath}/codec`] = String(stream.codec_name);
-                streamCache.codec = String(stream.codec_name);
+                streamData.codec = String(stream.codec_name);
             }
             if (stream.index != null) {
-                metadata[`${basePath}/index`] = String(stream.index);
-                streamCache.index = String(stream.index);
+                streamData.index = stream.index;
             }
             if (stream.duration) {
-                metadata[`${basePath}/duration`] = String(stream.duration);
-                streamCache.duration = String(stream.duration);
-            }
-            if (stream.codec_type) {
-                metadata[`${basePath}/codecType`] = String(stream.codec_type);
-                streamCache.codecType = String(stream.codec_type);
+                streamData.duration = String(stream.duration);
             }
             if (stream.disposition?.forced != null) {
-                const forced = stream.disposition.forced ? 'true' : 'false';
-                metadata[`${basePath}/forced`] = forced;
-                streamCache.forced = forced;
+                streamData.forced = stream.disposition.forced === 1;
             }
             if (stream.disposition?.default != null) {
-                const defaultVal = stream.disposition.default ? 'true' : 'false';
-                metadata[`${basePath}/default`] = defaultVal;
-                streamCache.default = defaultVal;
+                streamData.default = stream.disposition.default === 1;
             }
             if (stream.tags?.language) {
-                metadata[`${basePath}/language`] = String(stream.tags.language);
-                streamCache.language = String(stream.tags.language);
+                streamData.language = String(stream.tags.language);
             }
             if (stream.tags?.title) {
-                metadata[`${basePath}/title`] = String(stream.tags.title);
-                streamCache.title = String(stream.tags.title);
+                streamData.title = String(stream.tags.title);
             }
 
             // Video-specific fields
             if (stream.width && stream.width !== ('N/A' as unknown)) {
-                metadata[`${basePath}/width`] = String(stream.width);
-                streamCache.width = String(stream.width);
+                streamData.width = stream.width;
             }
             if (stream.height && stream.height !== ('N/A' as unknown)) {
-                metadata[`${basePath}/height`] = String(stream.height);
-                streamCache.height = String(stream.height);
+                streamData.height = stream.height;
             }
             if (stream.bit_rate && stream.bit_rate !== 'N/A') {
-                metadata[`${basePath}/bitrate`] = String(stream.bit_rate);
-                streamCache.bitrate = String(stream.bit_rate);
+                streamData.bitrate = String(stream.bit_rate);
             }
             if (stream.avg_frame_rate && stream.avg_frame_rate !== '0/0') {
-                metadata[`${basePath}/frameRate`] = String(stream.avg_frame_rate);
-                streamCache.frameRate = String(stream.avg_frame_rate);
+                streamData.frameRate = String(stream.avg_frame_rate);
             }
             if (stream.tags?.rotate) {
-                metadata[`${basePath}/rotation`] = String(stream.tags.rotate);
-                streamCache.rotation = String(stream.tags.rotate);
+                streamData.rotation = String(stream.tags.rotate);
             }
 
             // Audio-specific fields
             if (stream.sample_rate) {
-                metadata[`${basePath}/sampleRate`] = String(stream.sample_rate);
-                streamCache.sampleRate = String(stream.sample_rate);
+                streamData.sampleRate = String(stream.sample_rate);
             }
             if (stream.channel_layout) {
-                metadata[`${basePath}/channelLayout`] = String(stream.channel_layout);
-                streamCache.channelLayout = String(stream.channel_layout);
+                streamData.channelLayout = String(stream.channel_layout);
             }
+
+            // Store stream as JSON string at stream/{n}
+            metadata[`stream/${globalStreamIndex}`] = JSON.stringify(streamData);
+
+            // Initialize stream object for cache (keep old format for backwards compat)
+            if (!fileinfo.streamdetails![streamType]) {
+                fileinfo.streamdetails![streamType] = {};
+            }
+            // Store stringified fields in cache for reconstruction
+            const typeStreamIndex = Object.keys(fileinfo.streamdetails![streamType]!).length;
+            fileinfo.streamdetails![streamType]![typeStreamIndex] = {};
+            const streamCache = fileinfo.streamdetails![streamType]![typeStreamIndex];
+            for (const [key, value] of Object.entries(streamData)) {
+                if (key !== 'type') {
+                    streamCache[key] = String(value);
+                }
+            }
+
+            globalStreamIndex++;
         }
 
         // Write to meta-core
@@ -356,17 +330,34 @@ async function applyCachedMetadata(
         metadata['fileinfo/formatName'] = String(fileinfo.formatName);
     }
 
-    // Apply streamdetails
+    // Apply streamdetails - store each stream as JSON string at stream/{n}
     const streamdetails = fileinfo.streamdetails || {};
+    let globalStreamIndex = 0;
+
     for (const streamType of ['video', 'audio', 'subtitle', 'embeddedimage'] as const) {
         const streams = streamdetails[streamType] || {};
-        for (const [index, stream] of Object.entries(streams)) {
-            const basePath = `fileinfo/streamdetails/${streamType}/${index}`;
+        for (const [, stream] of Object.entries(streams)) {
+            // Build stream object with type
+            const streamData: Record<string, string | number | boolean> = {
+                type: streamType,
+            };
             for (const [key, value] of Object.entries(stream)) {
                 if (value != null) {
-                    metadata[`${basePath}/${key}`] = String(value);
+                    // Try to parse numbers and booleans back to their original types
+                    if (value === 'true') {
+                        streamData[key] = true;
+                    } else if (value === 'false') {
+                        streamData[key] = false;
+                    } else if (!isNaN(Number(value)) && value !== '') {
+                        streamData[key] = Number(value);
+                    } else {
+                        streamData[key] = value;
+                    }
                 }
             }
+            // Store as JSON string
+            metadata[`stream/${globalStreamIndex}`] = JSON.stringify(streamData);
+            globalStreamIndex++;
         }
     }
 
