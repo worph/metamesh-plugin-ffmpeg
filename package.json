@@ -1,6 +1,7 @@
 {
   "name": "@metazla/plugin-ffmpeg",
   "version": "1.0.0",
+  "packageManager": "pnpm@10.28.0",
   "description": "MetaMesh plugin: Extracts video/audio/subtitle metadata using FFprobe",
   "type": "module",
   "main": "dist/index.js",

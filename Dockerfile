@@ -3,26 +3,37 @@
 
 FROM node:20-slim AS builder
 
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+RUN npm install -g corepack@latest && corepack enable
+
 WORKDIR /app
 
-COPY package.json tsconfig.json ./
-RUN npm install
+# Copy package files first for layer caching
+COPY package.json pnpm-lock.yaml ./
+RUN corepack install
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 
+# Copy source and build
+COPY tsconfig.json ./
 COPY src/ ./src/
-RUN npm run build
+RUN pnpm run build
 
 # Production image with ffmpeg
 FROM node:20-slim
 
 # Install ffmpeg
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+RUN npm install -g corepack@latest && corepack enable
 
 WORKDIR /app
 
-COPY package.json ./
-RUN npm install --omit=dev
+COPY package.json pnpm-lock.yaml ./
+RUN corepack install
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile --prod
 
 COPY --from=builder /app/dist ./dist
 
